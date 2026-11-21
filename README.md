@@ -57,3 +57,5 @@ Identificador do projeto: `7x77`.
 ## Investigação de arquivos
 
 No painel Aurion, abra **Investigação de arquivos**. Os botões identificam formatos por assinatura binária, verificam SHA-256 com uma referência opcional e exportam um evento para a Central de evidências. Arquivos são processados localmente, até 32 MiB, sem execução ou extração de conteúdo. A identificação é preliminar. Use o exemplo sintético para testar.
+
+O visualizador hexadecimal lê apenas a janela solicitada de até 256 bytes. É possível navegar por páginas e saltar para um deslocamento decimal ou hexadecimal. O relatório continua exportando os dados de triagem, sem anexar a janela de bytes.
