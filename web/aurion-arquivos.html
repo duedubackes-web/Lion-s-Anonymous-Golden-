@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Aurion Cyber | Investigação de arquivos</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101719;color:#f4efe5;font:16px/1.55 system-ui,sans-serif}main{max-width:970px;margin:auto;padding:clamp(18px,6vw,62px)}h1{font:clamp(36px,7vw,62px)/1.1 Georgia,serif;margin:12px 0}a{color:#ffd18d}p{color:#c9d5d3}section{background:#192628;border:1px solid #485f62;border-radius:12px;padding:16px;margin:16px 0}label{display:block;margin:10px 0}input,button{font:inherit;border:1px solid #71674f;border-radius:7px;padding:8px 12px;color:inherit;background:#111b1d}input{display:block;width:100%;margin-top:5px}button{cursor:pointer;margin:5px 4px 5px 0}button.primary{background:#ffd18d;color:#171b1b;font-weight:650}button:disabled{opacity:.5;cursor:default}pre{white-space:pre-wrap;overflow-wrap:anywhere}h2{margin:0 0 8px}
+</style>
+<main>
+<a href="index.html">Voltar ao painel Aurion</a>
+<h1>Investigação de arquivos</h1>
+<p>Examine arquivos locais sem executá-los. As verificações usam os bytes do arquivo e rodam no navegador.</p>
+<section>
+<h2>Evidência</h2>
+<label>Arquivo (até 32 MiB)<input id="file" type="file"></label>
+<label>SHA-256 de referência (opcional)<input id="reference" maxlength="64" spellcheck="false" placeholder="64 caracteres hexadecimais"></label>
+<button type="button" data-action="all" class="primary">Analisar tudo</button>
+<button type="button" data-action="header">Identificar formato</button>
+<button type="button" data-action="hash">Verificar SHA-256</button>
+<button type="button" id="example">Carregar exemplo</button>
+<p id="status" role="status"></p>
+</section>
+<section id="results" hidden>
+<h2>Resultados</h2>
+<pre id="report"></pre>
+<button type="button" id="export">Exportar evento para Aurion Evidências</button>
+</section>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+const fileInput = byId('file');
+const reference = byId('reference');
+const status = byId('status');
+const results = byId('results');
+const report = byId('report');
+const actions = [...document.querySelectorAll('[data-action]')];
+let selected;
+let analysis = {};
+let revision = 0;
+
+function describeHeader(bytes) {
+  const starts = (...prefix) => prefix.every((byte, index) => bytes[index] === byte);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (starts(0x7f, 0x45, 0x4c, 0x46)) {
+    const bits = {1: '32 bits', 2: '64 bits'}[bytes[4]];
+    const order = {1: 'little-endian', 2: 'big-endian'}[bytes[5]];
+    if (!bits || !order || bytes.length < (bytes[4] === 1 ? 52 : 64)) return 'Assinatura ELF com cabeçalho incompleto ou inválido';
+    const machine = view.getUint16(18, bytes[5] === 1);
+    return 'ELF · ' + bits + ' · ' + order + ' · arquitetura ' +
+      ({3:'x86', 40:'ARM', 62:'x86-64', 183:'AArch64', 243:'RISC-V'}[machine] ?? machine);
+  }
+  if (starts(0x4d, 0x5a)) {
+    const offset = bytes.length >= 64 ? view.getUint32(60, true) : -1;
+    if (offset >= 64 && offset <= bytes.length - 6 && view.getUint32(offset, true) === 0x4550) {
+      const machine = view.getUint16(offset + 4, true);
+      return 'PE (Windows) · arquitetura ' + ({332:'x86', 34404:'x86-64', 43620:'ARM64'}[machine] ?? machine);
+    }
+    return 'Assinatura MZ · PE não confirmado';
+  }
+  if (bytes.length >= 4 && [0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe].includes(view.getUint32(0))) return 'Mach-O';
+  if (starts(0x25, 0x50, 0x44, 0x46, 0x2d)) return 'PDF';
+  if (starts(0x50, 0x4b, 0x03, 0x04) || starts(0x50, 0x4b, 0x05, 0x06)) return 'Contêiner ZIP';
+  if (starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'PNG';
+  return bytes.length ? 'Assinatura desconhecida' : 'Arquivo vazio';
+}
+
+async function sha256(bytes, api = globalThis.crypto?.subtle) {
+  if (!api) throw new Error('SHA-256 indisponível. Abra em HTTPS ou localhost.');
+  const digest = new Uint8Array(await api.digest('SHA-256', bytes));
+  return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function reset() {
+  revision++;
+  analysis = {};
+  results.hidden = true;
+  status.textContent = '';
+}
+
+function render() {
+  const lines = ['Arquivo: ' + selected.name, 'Tamanho: ' + selected.size + ' bytes'];
+  if (analysis.header) lines.push('Formato provável: ' + analysis.header);
+  if (analysis.hash) lines.push('SHA-256: ' + analysis.hash);
+  const expected = reference.value.trim().toLowerCase();
+  if (analysis.hash && expected) {
+    lines.push(/^[0-9a-f]{64}$/.test(expected)
+      ? 'Referência SHA-256: ' + (analysis.hash === expected ? 'confere' : 'diverge')
+      : 'Referência SHA-256: formato inválido');
+  }
+  report.textContent = lines.join('\n');
+  results.hidden = !analysis.header && !analysis.hash;
+}
+
+async function scan(action) {
+  if (!selected) {
+    status.textContent = 'Selecione um arquivo ou carregue o exemplo.';
+    return;
+  }
+  if (selected.size > 32 * 1024 * 1024) {
+    status.textContent = 'O arquivo excede o limite de 32 MiB.';
+    return;
+  }
+  const run = ++revision;
+  const file = selected;
+  for (const button of actions) button.disabled = true;
+  status.textContent = 'Analisando arquivo…';
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (run !== revision) return;
+    if (action !== 'hash') analysis.header = describeHeader(bytes);
+    if (action !== 'header') {
+      const hash = await sha256(bytes);
+      if (run !== revision) return;
+      analysis.hash = hash;
+    }
+    status.textContent = 'Verificação concluída.';
+  } catch (error) {
+    if (run === revision) status.textContent = error.message;
+  } finally {
+    if (run === revision) render();
+    for (const button of actions) button.disabled = false;
+  }
+}
+for (const button of actions) button.addEventListener('click', () => scan(button.dataset.action));
+fileInput.addEventListener('change', () => {
+  selected = fileInput.files[0];
+  reference.value = '';
+  reset();
+});
+reference.addEventListener('input', () => { if (selected) render(); });
+byId('example').addEventListener('click', () => {
+  const bytes = new Uint8Array(64);
+  bytes.set([127, 69, 76, 70, 2, 1, 1]);
+  bytes[18] = 62;
+  fileInput.value = '';
+  reference.value = '';
+  selected = new File([bytes], 'cabecalho-elf-sintetico.bin');
+  reset();
+  status.textContent = 'Exemplo selecionado. Escolha uma verificação.';
+});
+byId('export').addEventListener('click', () => {
+  if (results.hidden) return;
+  const events = [{data: new Date().toISOString(), ativo: selected.name, origem: 'Investigação de arquivos', mensagem: report.textContent}];
+  const url = URL.createObjectURL(new Blob([JSON.stringify(events, null, 2)], {type:'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'aurion-evento-arquivo.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</html>

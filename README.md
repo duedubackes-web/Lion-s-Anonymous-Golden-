@@ -53,3 +53,7 @@ O laboratório do painel verifica SHA-256 com dois vetores conhecidos. Ele mede 
 Referência para o desenho do laboratório: [nsacyber/simon-speck-supercop](https://github.com/nsacyber/simon-speck-supercop).
 
 Identificador do projeto: `7x77`.
+
+## Investigação de arquivos
+
+No painel Aurion, abra **Investigação de arquivos**. Os botões identificam formatos por assinatura binária, verificam SHA-256 com uma referência opcional e exportam um evento para a Central de evidências. Arquivos são processados localmente, até 32 MiB, sem execução ou extração de conteúdo. A identificação é preliminar. Use o exemplo sintético para testar.
