@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Aurion | Mesa de fontes</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101719;color:#f4efe5;font:16px/1.5 system-ui,sans-serif}main{max-width:960px;margin:auto;padding:clamp(18px,6vw,60px)}a{color:#ffd18d}h1{font:clamp(36px,7vw,60px)/1.1 Georgia,serif;margin:12px 0}p,small{color:#c9d5d3}section,form{background:#192628;border:1px solid #485f62;border-radius:12px;padding:16px;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px}label{display:block;margin:8px 0}input,select,textarea,button{font:inherit;color:inherit;background:#111b1d;border:1px solid #71674f;border-radius:7px;padding:8px}input,select,textarea{display:block;width:100%;margin-top:5px}button{cursor:pointer;margin:8px 5px 0 0}button[type=submit]{background:#ffd18d;color:#171b1b;font-weight:650}button:disabled{opacity:.5}li{padding:8px 0;overflow-wrap:anywhere}li p{white-space:pre-wrap;margin:4px 0}
+</style>
+<main>
+<a href="index.html">Voltar ao Aurion</a>
+<h1>Mesa de fontes</h1>
+<p>Registre fontes públicas e a base de cada achado. Use o dossiê JSON para guardar e retomar o trabalho.</p>
+<form id="source-form">
+<div class="grid">
+<label>Título<input name="title" required maxlength="160"></label>
+<label>URL pública<input name="url" type="url" required maxlength="400"></label>
+<label>Data do documento<input name="documentDate" type="date"></label>
+<label>Data de publicação<input name="publicationDate" type="date"></label>
+<label>Verificação<select name="state"><option>Pendente</option><option>Corroborada</option><option>Contestada</option></select></label>
+</div>
+<label>Achado e base da verificação<textarea name="note" rows="3" maxlength="800" required></textarea></label>
+<button type="submit">Adicionar fonte</button>
+<button type="button" id="demo">Inserir exemplo sintético</button>
+</form>
+<section>
+<h2>Fontes registradas</h2>
+<div class="grid">
+<label>Buscar por título, domínio ou achado<input id="query" type="search"></label>
+<label>Filtrar por verificação<select id="filter"><option value="">Todas</option><option>Pendente</option><option>Corroborada</option><option>Contestada</option></select></label>
+<label>Importar dossiê (mesclar)<input id="import" type="file" accept=".json,application/json"></label>
+</div>
+<p role="status" id="status"></p>
+<ol id="sources"></ol>
+<button type="button" id="save" disabled>Baixar dossiê completo</button>
+<button type="button" id="events" disabled>Exportar resultados para a linha do tempo</button>
+</section>
+</main>
+<script>
+const get = id => document.getElementById(id);
+const states = ['Pendente','Corroborada','Contestada'];
+const entries = new Map();
+const maxBytes = 1024 * 1024;
+
+function cleanSource(input) {
+  function field(key, max) {
+    const value = input?.[key];
+    if (typeof value !== 'string' || value.length > max) throw new Error('Campo inválido: ' + key);
+    return value.trim();
+  }
+  const title = field('title',160);
+  const url = new URL(field('url',400));
+  const documentDate = field('documentDate',10);
+  const publicationDate = field('publicationDate',10);
+  const state = field('state',20);
+  const note = field('note',800);
+  if (!title || !note || !states.includes(state) || !['https:','http:'].includes(url.protocol) || url.username || url.password || url.href.length > 400) {
+    throw new Error('Preencha título, achado e uma URL HTTP(S) sem credenciais.');
+  }
+  for (const date of [documentDate, publicationDate]) {
+    if (!date) continue;
+    const instant = new Date(date);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(+instant) || instant.toISOString().slice(0,10) !== date) {
+      throw new Error('A data deve ser válida e seguir o formato AAAA-MM-DD.');
+    }
+  }
+  return {title, url:url.href, documentDate, publicationDate, state, note};
+}
+
+function mergeSources(rows) {
+  const verified = rows.map(cleanSource);
+  const next = new Map(entries);
+  for (const item of verified) next.set(item.url, item);
+  if (next.size > 1000 || new TextEncoder().encode(JSON.stringify({version:1,sources:[...next.values()]})).length > maxBytes) {
+    throw new Error('O dossiê comporta até 1.000 fontes ou 1 MiB.');
+  }
+  entries.clear();
+  for (const [key, item] of next) entries.set(key,item);
+}
+function visible() {
+  const query = get('query').value.trim().toLowerCase();
+  const state = get('filter').value;
+  return [...entries.values()].filter(entry => (!state || entry.state === state) &&
+    [entry.title,entry.url,entry.note].join(' ').toLowerCase().includes(query));
+}
+function render() {
+  const rows = visible();
+  get('sources').replaceChildren(...rows.map(entry => {
+    const row = document.createElement('li');
+    const link = document.createElement('a');
+    link.href = entry.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = entry.title;
+    const meta = document.createElement('small');
+    meta.textContent = ' · ' + entry.state + ' · Documento: ' + (entry.documentDate || 'sem data') +
+      ' · Publicação: ' + (entry.publicationDate || 'sem data');
+    const note = document.createElement('p');
+    note.textContent = entry.note;
+    row.append(link,meta,note);
+    return row;
+  }));
+  get('status').textContent = rows.length + ' de ' + entries.size + ' fontes exibidas.';
+  get('save').disabled = !entries.size;
+  get('events').disabled = !rows.length;
+}
+get('source-form').addEventListener('submit', event => {
+  event.preventDefault();
+  try {
+    mergeSources([Object.fromEntries(new FormData(event.currentTarget))]);
+    event.currentTarget.reset();
+    render();
+  } catch (error) { get('status').textContent = error.message; }
+});
+get('demo').addEventListener('click', () => {
+  try {
+    mergeSources([{title:'Comunicado de exemplo',url:'https://example.org/comunicado',documentDate:'2026-11-10',
+      publicationDate:'2026-11-12',state:'Pendente',note:'Registro sintético. Buscar uma segunda fonte independente sobre a data mencionada.'}]);
+    render();
+  } catch (error) { get('status').textContent = error.message; }
+});
+get('query').addEventListener('input',render);
+get('filter').addEventListener('change',render);
+get('import').addEventListener('change', async event => {
+  const [file] = event.target.files;
+  event.target.value = '';
+  if (!file) return;
+  try {
+    if (file.size > maxBytes) throw new Error('O limite de importação é 1 MiB.');
+    const data = JSON.parse((await file.text()).replace(/^\uFEFF/,''));
+    if (data?.version !== 1 || !Array.isArray(data.sources) || data.sources.length > 1000) throw new Error('Formato de dossiê incompatível.');
+    mergeSources(data.sources);
+    render();
+  } catch (error) { get('status').textContent = error.message; }
+});
+function saveJson(name, content) {
+  const blob = new Blob([JSON.stringify(content)],{type:'application/json'});
+  if (blob.size > maxBytes) {
+    get('status').textContent = 'Exportação acima de 1 MiB. Use um filtro para reduzir o número de eventos.';
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url),1000);
+}
+get('save').addEventListener('click',() => saveJson('aurion-fontes.json',{version:1,sources:[...entries.values()]}));
+get('events').addEventListener('click',() => {
+  const reviewedAt = new Date().toISOString();
+  saveJson('aurion-eventos-fontes.json',visible().map(entry => ({
+    data:reviewedAt, ativo:entry.title, origem:'Mesa de fontes',
+    mensagem:[entry.state,entry.url,'Documento: ' + (entry.documentDate || 'sem data'),
+      'Publicação: ' + (entry.publicationDate || 'sem data'),entry.note].join(' | ')
+  })));
+});
+</script>
+</html>

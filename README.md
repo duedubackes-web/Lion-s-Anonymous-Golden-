@@ -63,3 +63,7 @@ O visualizador hexadecimal lê apenas a janela solicitada de até 256 bytes. É 
 ## Inventário de serviços
 
 No painel web, importe duas coletas JSON do mesmo ambiente. O comparador identifica adições, remoções e mudanças no serviço declarado por ativo, porta e transporte. Campos ausentes de transporte formam uma chave própria. Use duas coletas com o mesmo formato e escopo. A exportação é compatível com a linha do tempo da Central de Evidências.
+
+## Mesa de fontes
+
+Registre o link público, as datas de origem e publicação, o achado e sua verificação. Salve o dossiê JSON para retomar o trabalho. A importação mescla por URL e atualiza registros coincidentes. Exporte os resultados filtrados para a linha do tempo. A página não recupera documentos automaticamente.
