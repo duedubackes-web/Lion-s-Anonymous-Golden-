@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Aurion Cyber | Inventário de serviços</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101719;color:#f4efe5;font:16px/1.55 system-ui,sans-serif}main{max-width:985px;margin:auto;padding:clamp(18px,6vw,62px)}h1{font:clamp(36px,7vw,62px)/1.1 Georgia,serif;margin:12px 0}a{color:#ffd18d}p{color:#c9d5d3}section{background:#192628;border:1px solid #485f62;border-radius:12px;padding:16px;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:12px}label{display:block;margin:10px 0}input,button,select{font:inherit;border:1px solid #71674f;border-radius:7px;padding:8px 12px;color:inherit;background:#111b1d}input,select{display:block;width:100%;margin-top:5px}button{cursor:pointer;margin:5px 4px 5px 0}button.primary{background:#ffd18d;color:#171b1b;font-weight:650}button:disabled{opacity:.5}li{overflow-wrap:anywhere;padding-bottom:8px}code{overflow-wrap:anywhere}
+</style>
+<main>
+<a href="index.html">Voltar ao painel Aurion</a>
+<h1>Inventário de serviços</h1>
+<p>Compare duas coletas existentes do mesmo ambiente. Os arquivos são lidos localmente no navegador.</p>
+<section>
+<div class="grid">
+<label>Coleta anterior<input id="previous" type="file" accept=".json,application/json"></label>
+<label>Coleta atual<input id="current" type="file" accept=".json,application/json"></label>
+</div>
+<details><summary>Formato JSON</summary><p>Use uma lista de registros ou um objeto com a lista em <code>data</code>. Cada registro deve conter <code>ip</code> ou <code>domain</code>, além de <code>port</code>. <code>service</code> e <code>transport</code> são opcionais.</p><code>[{"domain":"portal.example","port":443,"service":"https","transport":"tcp"}]</code></details>
+<button type="button" class="primary" id="compare">Comparar coletas</button>
+<button type="button" id="demo">Ver exemplo</button>
+<p role="status" id="status"></p>
+</section>
+<section id="results" hidden>
+<label>Filtrar diferenças<select id="filter"><option value="">Todas</option><option>Adicionado</option><option>Removido</option><option>Alterado</option></select></label>
+<p id="summary" role="status"></p>
+<ul id="entries"></ul>
+<button type="button" id="export">Exportar eventos exibidos</button>
+</section>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+const maxBytes = 1024 * 1024;
+let differences = [];
+let revision = 0;
+let comparedAt = '';
+
+function indexInventory(input) {
+  const parsed = JSON.parse(input.replace(/^\uFEFF/, ''));
+  const rows = Array.isArray(parsed) ? parsed : parsed?.data;
+  if (!Array.isArray(rows) || rows.length > 5000) throw new Error('Informe uma lista de até 5.000 registros.');
+  const index = new Map();
+  for (const [i, row] of rows.entries()) {
+    const clean = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
+    const host = clean(row?.ip) || clean(row?.domain);
+    const rawPort = row?.port;
+    const port = typeof rawPort === 'string' && /^\d{1,5}$/.test(rawPort) ? Number(rawPort) : rawPort;
+    const transport = clean(row?.transport);
+    const service = clean(row?.service);
+    if (!host || host.length > 253 || /[\s\u0000-\u001f]/.test(host) || !Number.isInteger(port) ||
+        port < 1 || port > 65535 || transport.length > 16 || service.length > 160) {
+      throw new Error('Registro ' + (i + 1) + ' inválido. Verifique ativo, porta e tamanhos dos campos.');
+    }
+    const key = JSON.stringify([host, port, transport]);
+    if (index.has(key) && index.get(key).service !== service) {
+      throw new Error('Serviços conflitantes para ' + host + ' na porta ' + port + '.');
+    }
+    index.set(key, {host, port, transport, service});
+  }
+  return index;
+}
+
+function compareInventories(previous, current) {
+  const changes = [];
+  for (const key of new Set([...previous.keys(), ...current.keys()])) {
+    const before = previous.get(key);
+    const after = current.get(key);
+    const kind = !before ? 'Adicionado' : !after ? 'Removido' : before.service !== after.service ? 'Alterado' : '';
+    if (kind) changes.push({kind, before, after});
+  }
+  return changes;
+}
+const label = entry => entry.host + ' · porta ' + entry.port + (entry.transport ? '/' + entry.transport : '');
+function describe(change) {
+  const service = record => record?.service || 'serviço não informado';
+  const detail = change.kind === 'Alterado'
+    ? service(change.before) + ' → ' + service(change.after)
+    : service(change.after || change.before);
+  return change.kind + ' · ' + label(change.after || change.before) + ' · ' + detail;
+}
+function visible() {
+  const kind = byId('filter').value;
+  return differences.filter(change => !kind || kind === change.kind).slice(0,1000);
+}
+function render() {
+  const rows = visible();
+  byId('entries').replaceChildren(...rows.map(change => {
+    const li = document.createElement('li');
+    li.textContent = describe(change);
+    return li;
+  }));
+  byId('summary').textContent = rows.length + ' de ' + differences.length + ' diferenças exibidas (até 1.000).';
+  byId('export').disabled = rows.length === 0;
+}
+
+function show(previous, current) {
+  differences = compareInventories(previous, current);
+  comparedAt = new Date().toISOString();
+  byId('filter').value = '';
+  byId('results').hidden = false;
+  byId('status').textContent = previous.size + ' serviços na coleta anterior e ' + current.size + ' na atual.';
+  render();
+}
+
+for (const id of ['previous','current']) byId(id).addEventListener('change', () => {
+  revision++;
+  byId('results').hidden = true;
+  byId('status').textContent = '';
+});
+byId('compare').addEventListener('click', async () => {
+  const run = ++revision;
+  byId('results').hidden = true;
+  byId('status').textContent = 'Lendo coletas…';
+  try {
+    const files = ['previous','current'].map(id => byId(id).files[0]);
+    if (!files.every(Boolean)) throw new Error('Selecione as duas coletas JSON.');
+    if (files.some(file => file.size > maxBytes)) throw new Error('O limite é de 1 MiB por arquivo.');
+    const indexes = await Promise.all(files.map(async file => indexInventory(await file.text())));
+    if (run === revision) show(...indexes);
+  } catch (error) {
+    if (run === revision) byId('status').textContent = error instanceof SyntaxError ? 'JSON inválido em uma das coletas.' : error.message;
+  }
+});
+byId('demo').addEventListener('click', () => {
+  revision++;
+  const json = entries => JSON.stringify(entries.map(([domain,port,service]) => ({domain,port,service})));
+  show(indexInventory(json([['portal.example',443,'https'],['relay.example',25,'smtp']])),
+       indexInventory(json([['portal.example',443,'portal'],['docs.example',443,'https']])));
+});
+byId('filter').addEventListener('change', render);
+byId('export').addEventListener('click', () => {
+  const rows = visible().map(change => ({
+    data: comparedAt, ativo: (change.after || change.before).host,
+    origem: 'Comparação de inventários de serviços', mensagem: describe(change)
+  }));
+  const data = new Blob([JSON.stringify(rows)], {type:'application/json'});
+  if (data.size > maxBytes) {
+    byId('summary').textContent = 'A exportação excede 1 MiB. Filtre por tipo de diferença e tente novamente.';
+    return;
+  }
+  const url = URL.createObjectURL(data);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'aurion-eventos-inventario.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url),1000);
+});
+</script>
+</html>
