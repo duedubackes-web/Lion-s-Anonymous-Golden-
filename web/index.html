@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<title>Lion's Anonymous Golden | Aurion Cyber</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101719;color:#f4efe5;font:16px/1.55 system-ui,sans-serif}main{max-width:1090px;margin:auto;padding:clamp(20px,6vw,72px)}h1{font:clamp(40px,8vw,74px)/1.05 Georgia,serif;margin:12px 0}h2,h3{margin:0 0 8px}header strong,a{color:#ffd18d}p,small{color:#c9d5d3}nav,.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,235px),1fr));gap:12px;margin:24px 0}.card,section{background:#192628;border:1px solid #485f62;border-radius:12px;padding:18px}.card{display:block;text-decoration:none}.card:hover{border-color:#ffd18d}.card span{display:block}.card small{display:block;margin-top:6px}section{margin:28px 0}button{font:inherit;border:1px solid #71674f;border-radius:7px;padding:8px 12px;background:#ffd18d;color:#171b1b;cursor:pointer;margin:8px 8px 8px 0}button:disabled{opacity:.5;cursor:default}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid #485f62}code{color:#ffd18d}
+</style>
+<main>
+<header><strong>AURION CYBER</strong><h1>Lion’s Anonymous Golden</h1><p>Reúna, revise e verifique evidências de segurança.</p></header>
+<nav aria-label="Ferramentas">
+<a class="card" href="aurion-triagem-web.html"><span>Triagem de logs web</span><small>Compare rotas e exporte eventos para investigação.</small></a>
+<a class="card" href="aurion-evidencias.html"><span>Central de evidências</span><small>Organize eventos, compare inventários e confira arquivos.</small></a>
+<a class="card" href="aurion-kit.html"><span>Senhas e histórico Git</span><small>Gere senhas e revise os metadados de commits.</small></a>
+<a class="card" href="aurion-enigma.html"><span>Simulador Enigma</span><small>Explore os rotores e acompanhe o sinal por letra.</small></a>
+</nav>
+<section>
+<h2>Processamento SELinux</h2>
+<p>Importe na Central de evidências os eventos gerados pelo analisador AVC. Para processar logs em lote, execute este comando na pasta do projeto:</p>
+<code>python3 avc_batch.py exemplo.log --output caso.zip</code>
+</section>
+<section id="benchmark">
+<h2>Laboratório SHA-256</h2>
+<p>Confira dois vetores conhecidos e meça o tempo de hash em quatro tamanhos de entrada. A medição usa dados sintéticos, a implementação do navegador e o tempo de ponta a ponta da chamada.</p>
+<button type="button" id="run">Executar medição</button><button type="button" id="export" disabled>Exportar resultados</button>
+<p id="status" role="status"></p>
+<table id="results" hidden><thead><tr><th scope="col">Entrada</th><th scope="col">Mediana</th><th scope="col">Amostras</th></tr></thead><tbody></tbody></table>
+</section>
+</main>
+<script>
+const encoder = new TextEncoder();
+const vectors = [
+  ['', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'],
+  ['abc', 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad']
+];
+async function verifyVectors(digest) {
+  for (const [message, expected] of vectors) {
+    const data = new Uint8Array(await digest(encoder.encode(message)));
+    const hex = Array.from(data, byte => byte.toString(16).padStart(2, '0')).join('');
+    if (hex !== expected) throw new Error('Falha de verificação SHA-256. Medição interrompida.');
+  }
+}
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+const button = document.querySelector('#run');
+const save = document.querySelector('#export');
+const status = document.querySelector('#status');
+const table = document.querySelector('#results');
+let report = null;
+
+button.addEventListener('click', async () => {
+  report = null;
+  button.disabled = true;
+  save.disabled = true;
+  table.hidden = true;
+  status.textContent = 'Validando vetores…';
+  try {
+    if (!globalThis.crypto?.subtle) throw new Error('Abra o painel em um navegador com suporte local à Web Crypto.');
+    const digest = input => crypto.subtle.digest('SHA-256', input);
+    await verifyVectors(digest);
+    const measurements = [];
+    for (const bytes of [1024, 16384, 262144, 1048576]) {
+      status.textContent = 'Medindo entrada de ' + bytes.toLocaleString('pt-BR') + ' bytes…';
+      const buffer = new Uint8Array(bytes);
+      await digest(buffer);
+      const elapsedMs = [];
+      for (let sample = 0; sample < 21; sample++) {
+        const start = performance.now();
+        await digest(buffer);
+        elapsedMs.push(performance.now() - start);
+      }
+      measurements.push({ bytes, medianMs: median(elapsedMs), elapsedMs });
+    }
+    report = { algorithm: 'SHA-256', runtime: 'Web Crypto', vectorsPassed: vectors.length, measurements };
+    const rows = measurements.map(({bytes, medianMs, elapsedMs}) => {
+      const row = document.createElement('tr');
+      for (const value of [bytes.toLocaleString('pt-BR') + ' bytes', medianMs.toLocaleString('pt-BR',{maximumFractionDigits:3}) + ' ms', elapsedMs.length]) {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.append(cell);
+      }
+      return row;
+    });
+    table.querySelector('tbody').replaceChildren(...rows);
+    table.hidden = false;
+    save.disabled = false;
+    status.textContent = 'Dois vetores validados. Medição concluída.';
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+save.addEventListener('click', () => {
+  if (!report) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'aurion-sha256-benchmark.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</html>

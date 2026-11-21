@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Aurion Cyber | Senhas e histórico Git</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#10171c;color:#eef5f5;font:16px/1.5 system-ui,sans-serif}main{max-width:970px;margin:auto;padding:clamp(18px,5vw,60px)}header{margin-bottom:24px}header strong,a{color:#89eed0}h1{font-size:clamp(34px,7vw,56px);line-height:1.1;margin:10px 0}h2{margin-top:0}section{margin:18px 0;padding:clamp(16px,4vw,30px);border:1px solid #49606a;border-radius:12px;background:#19242b}p,small{color:#c6d3d8}nav a{display:inline-block;margin-right:16px}.controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:12px 0}fieldset{margin:16px 0;border:1px solid #49606a;border-radius:8px}fieldset label{display:inline-block;margin:4px 12px 4px 0}input,button,textarea{font:inherit;color:inherit;background:#11191f;border:1px solid #63808b;border-radius:7px;padding:8px}input[type=checkbox]{accent-color:#89eed0}input[type=number]{width:90px}input[type=search],input[readonly],textarea{width:100%;margin:6px 0}.mono,textarea,code{font-family:monospace}textarea{min-height:145px;resize:vertical}button{cursor:pointer}button.primary{background:#89eed0;color:#081c16;font-weight:700}button:disabled{opacity:.5;cursor:default}pre{overflow:auto;background:#11191f;padding:12px;border-radius:7px}li{padding:8px 0;overflow-wrap:anywhere}li small{display:block}input:focus-visible,button:focus-visible,textarea:focus-visible{outline:2px solid #89eed0;outline-offset:2px}
+</style>
+<main>
+<header><strong>AURION CYBER</strong><h1>Senhas e histórico Git</h1>
+<nav aria-label="Ferramentas"><a href="#password">Gerador de senhas</a><a href="#git">Revisão Git</a></nav></header>
+
+<section id="password">
+<h2>Gerador de senhas</h2>
+<p>Crie uma senha com a fonte de aleatoriedade do navegador. A ferramenta não mantém histórico de senhas.</p>
+<form id="password-form" autocomplete="off">
+<label>Comprimento <input id="length" type="number" min="12" max="128" value="24" required></label>
+<fieldset><legend>Caracteres</legend>
+<label><input type="checkbox" name="charset" value="upper" checked> Maiúsculas</label>
+<label><input type="checkbox" name="charset" value="lower" checked> Minúsculas</label>
+<label><input type="checkbox" name="charset" value="digits" checked> Números</label>
+<label><input type="checkbox" name="charset" value="symbols" checked> Símbolos</label>
+</fieldset>
+<label><input type="checkbox" id="avoid"> Excluir caracteres parecidos (O, 0, I, l e 1)</label>
+<div class="controls">
+<button type="submit" class="primary">Gerar senha</button>
+<button type="button" id="copy" disabled>Copiar</button>
+<button type="button" id="clear" disabled>Limpar</button>
+</div>
+<label>Senha gerada<input id="generated" class="mono" readonly spellcheck="false" autocapitalize="off"></label>
+<p id="password-status" role="status"></p>
+</form>
+</section>
+
+<section id="git">
+<h2>Revisão do histórico Git</h2>
+<p>Carregue os metadados de commits de um repositório. Busque por assunto, data ou hash e exporte os resultados filtrados.</p>
+<details><summary>Como obter o histórico</summary>
+<p>No GitHub Codespaces, abra o terminal na pasta do projeto e copie o comando abaixo. Cole a saída em <strong>Histórico Git</strong>.</p>
+<pre><code>git log -1000 --format='%H%x09%aI%x09%s'</code></pre>
+</details>
+<form id="git-form">
+<label>Histórico Git<textarea id="git-input" spellcheck="false" required></textarea></label>
+<div class="controls">
+<button class="primary" type="submit">Carregar histórico</button>
+<button type="button" id="demo">Ver exemplo</button>
+<button type="button" id="export" disabled>Exportar JSON</button>
+</div>
+</form>
+<label>Buscar commits<input id="query" type="search" placeholder="Ex.: permissões"></label>
+<p id="git-status" role="status"></p>
+<ol id="commits"></ol>
+</section>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+const charsets = {
+  upper: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  lower: 'abcdefghijklmnopqrstuvwxyz',
+  digits: '0123456789',
+  symbols: '!@#$%^&*()-_=+?'
+};
+
+function generatePassword(length, selected, avoid, random = globalThis.crypto) {
+  if (!Number.isInteger(length) || length < 12 || length > 128) throw new Error('Escolha entre 12 e 128 caracteres.');
+  if (selected.length === 0 || !selected.every(key => Object.hasOwn(charsets, key))) {
+    throw new Error('Selecione ao menos um conjunto de caracteres.');
+  }
+  if (!random?.getRandomValues) throw new Error('A geração segura está indisponível neste navegador.');
+  const groups = [...new Set(selected)].map(key => avoid ? charsets[key].replace(/[O0Il1]/g, '') : charsets[key]);
+  const alphabet = groups.join('');
+  const limit = 256 - (256 % alphabet.length);
+  const bytes = new Uint8Array(256);
+  let cursor = bytes.length;
+  function nextCharacter() {
+    while (true) {
+      if (cursor === bytes.length) {
+        random.getRandomValues(bytes);
+        cursor = 0;
+      }
+      const byte = bytes[cursor++];
+      if (byte < limit) return alphabet[byte % alphabet.length];
+    }
+  }
+  // Rejeita senhas incompletas para manter distribuição uniforme entre as válidas.
+  while (true) {
+    const candidate = Array.from({length}, nextCharacter).join('');
+    if (groups.every(group => [...candidate].some(character => group.includes(character)))) return candidate;
+  }
+}
+
+function parseHistory(input) {
+  if (new TextEncoder().encode(input).length > 2 * 1024 * 1024) throw new Error('O histórico deve ter até 2 MiB.');
+  const rows = input.replace(/^\uFEFF/, '').split(/\r?\n/).filter(line => line.trim());
+  if (!rows.length || rows.length > 1000) throw new Error('Informe de 1 a 1.000 commits.');
+  return rows.map((line, index) => {
+    const [hash, date, ...parts] = line.split('\t');
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(hash) || !Number.isFinite(Date.parse(date)) || parts.length === 0) {
+      throw new Error('Formato inválido no registro ' + (index + 1) + '. Use o comando indicado acima.');
+    }
+    return { hash, data: date, assunto: parts.join('\t') };
+  });
+}
+
+function filterHistory(entries, query) {
+  const normalize = value => value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  const term = normalize(query.trim());
+  return entries.filter(entry => normalize([entry.hash, entry.data, entry.assunto].join(' ')).includes(term));
+}
+
+const generated = byId('generated');
+const copy = byId('copy');
+const clear = byId('clear');
+const passwordStatus = byId('password-status');
+function clearPassword() {
+  generated.value = '';
+  copy.disabled = true;
+  clear.disabled = true;
+  passwordStatus.textContent = '';
+}
+clear.addEventListener('click', clearPassword);
+byId('password-form').addEventListener('input', clearPassword);
+byId('password-form').addEventListener('submit', event => {
+  event.preventDefault();
+  clearPassword();
+  try {
+    const selected = [...document.querySelectorAll('[name="charset"]:checked')].map(input => input.value);
+    generated.value = generatePassword(byId('length').valueAsNumber, selected, byId('avoid').checked);
+    copy.disabled = false;
+    clear.disabled = false;
+    passwordStatus.textContent = 'Senha gerada.';
+  } catch (error) {
+    passwordStatus.textContent = error.message;
+  }
+});
+copy.addEventListener('click', async () => {
+  const value = generated.value;
+  let message;
+  try {
+    await navigator.clipboard.writeText(value);
+    message = 'Senha copiada.';
+  } catch {
+    message = 'Selecione a senha e copie manualmente.';
+  }
+  if (generated.value === value) passwordStatus.textContent = message;
+});
+
+const gitInput = byId('git-input');
+const query = byId('query');
+const gitStatus = byId('git-status');
+const commitList = byId('commits');
+const exportButton = byId('export');
+let commits = [];
+
+function renderHistory() {
+  const visible = filterHistory(commits, query.value);
+  commitList.replaceChildren(...visible.map(commit => {
+    const row = document.createElement('li');
+    const metadata = document.createElement('small');
+    row.textContent = commit.assunto || '(Sem assunto)';
+    metadata.textContent = commit.hash.slice(0, 12) + ' · ' + commit.data;
+    row.append(metadata);
+    return row;
+  }));
+  exportButton.disabled = visible.length === 0;
+  gitStatus.textContent = visible.length + ' de ' + commits.length + ' commits exibidos.';
+}
+function clearHistory() {
+  commits = [];
+  renderHistory();
+  gitStatus.textContent = '';
+}
+function loadHistory() {
+  clearHistory();
+  try {
+    commits = parseHistory(gitInput.value);
+    renderHistory();
+  } catch (error) {
+    gitStatus.textContent = error.message;
+  }
+}
+byId('git-form').addEventListener('submit', event => {
+  event.preventDefault();
+  loadHistory();
+});
+gitInput.addEventListener('input', clearHistory);
+query.addEventListener('input', renderHistory);
+byId('demo').addEventListener('click', () => {
+  const subjects = ['Revisar permissões do painel', 'Registrar alterações no inventário', 'Atualizar guia de revisão'];
+  gitInput.value = subjects.map((subject, index) =>
+    [String(index + 1).repeat(40), '2026-11-' + (21 - index) + 'T09:30:00-03:00', subject].join('\t')
+  ).join('\n');
+  query.value = '';
+  loadHistory();
+});
+exportButton.addEventListener('click', () => {
+  const selected = filterHistory(commits, query.value);
+  const blob = new Blob([JSON.stringify(selected, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'aurion-revisao-git.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</html>

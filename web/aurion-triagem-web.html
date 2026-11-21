@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Aurion Cyber | Triagem de logs web</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#11191c;color:#eef6f3;font:16px/1.55 system-ui,sans-serif}main{max-width:1060px;margin:auto;padding:clamp(18px,5vw,58px)}strong{color:#93f2cf}h1{font-size:clamp(36px,7vw,58px);line-height:1.1;margin:9px 0}p,small{color:#becfcf}section{margin:18px 0;padding:18px;border:1px solid #47636a;border-radius:12px;background:#192629}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr));gap:14px}input,button,select{font:inherit;color:inherit;background:#111b1e;border:1px solid #668487;border-radius:7px;padding:8px}label input,label select{display:block;width:100%;margin:8px 0}button{cursor:pointer;margin:8px 5px 0 0}button.primary{background:#93f2cf;color:#0b2019;font-weight:650}button:disabled{opacity:.5}.table{overflow:auto}table{border-collapse:collapse;width:100%;min-width:580px;text-align:left}th,td{padding:10px 8px;border-bottom:1px solid #47636a;overflow-wrap:anywhere}td:first-child{max-width:290px}caption{text-align:left}h2{margin:0 0 10px}code{color:#93f2cf}
+</style>
+<main>
+<header><strong>AURION CYBER</strong><h1>Triagem de logs web</h1><p>Compare logs de acesso com um período de referência para revisar rotas pouco acessadas, rotas novas e mudanças no volume de erros.</p></header>
+<section>
+<h2>Selecionar logs</h2>
+<p>Use logs de acesso no formato Common ou Combined do Apache ou Nginx, até 10 MiB por arquivo. Escolha períodos comparáveis para o mesmo serviço.</p>
+<div class="grid">
+<label>Log atual<input type="file" id="current" accept=".log,.txt"></label>
+<label>Log de referência (opcional)<input type="file" id="baseline" accept=".log,.txt"></label>
+<label>Nome do ativo<input id="asset" maxlength="120" placeholder="Ex.: Portal interno"></label>
+</div>
+<button type="button" class="primary" id="analyze">Analisar arquivos</button>
+<button type="button" id="demo">Ver exemplo</button>
+<p id="status" role="status"></p>
+</section>
+<section id="results" hidden>
+<h2>Rotas para revisão</h2>
+<p>Os sinais ajudam a priorizar a revisão manual e, isoladamente, não confirmam presença de web shell. A análise descarta parâmetros de URL e não exporta IPs de origem.</p>
+<label>Filtrar por sinal<select id="filter"><option value="">Todos</option><option>Rota nova com sucesso</option><option>Sucesso com baixa diversidade</option><option>Aumento da proporção de erros</option></select></label>
+<div class="table"><table><thead><tr><th scope="col">Rota</th><th scope="col">Solicitações</th><th scope="col">Erros</th><th scope="col">Sinais</th></tr></thead><tbody id="rows"></tbody></table></div>
+<button type="button" id="export">Exportar eventos para o Aurion Evidências</button>
+<p id="export-status" role="status"></p>
+</section>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function parseLog(text) {
+  const routes = new Map();
+  let valid = 0;
+  let skipped = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const match = /^(\S+)\s+\S+\s+\S+\s+\[(\d{2})\/([A-Za-z]{3})\/(\d{4}):(\d{2}:\d{2}:\d{2}) ([+-]\d{2})(\d{2})\]\s+"[A-Z]+\s+(\/[^\s"]*)\s+HTTP\/[\d.]+"\s+([1-5]\d{2})(?:\s|$)/.exec(line);
+    if (!match) { skipped++; continue; }
+    const [,client,day,month,year,clock,zone,minutes,target,status] = match;
+    const monthNumber = months.indexOf(month) + 1;
+    const time = Date.parse(year + '-' + String(monthNumber).padStart(2,'0') + '-' + day + 'T' + clock + zone + ':' + minutes);
+    if (!Number.isFinite(time)) { skipped++; continue; }
+    const path = target.split(/[?#]/, 1)[0];
+    const code = Number(status);
+    let route = routes.get(path);
+    if (!route) {
+      route = {path, requests:0, errors:0, successfulClients:new Set(), latest:time};
+      routes.set(path, route);
+    }
+    route.requests++;
+    if (code >= 400) route.errors++;
+    if (code >= 200 && code < 300 && route.successfulClients.size < 2) route.successfulClients.add(client);
+    route.latest = Math.max(time, route.latest);
+    valid++;
+  }
+  return {routes, valid, skipped};
+}
+function triage(current, baseline) {
+  const findings = [];
+  for (const route of current.routes.values()) {
+    const prior = baseline?.routes.get(route.path);
+    const signals = [];
+    if (baseline && !prior && route.successfulClients.size) signals.push('Rota nova com sucesso');
+    if (route.successfulClients.size === 1) signals.push('Sucesso com baixa diversidade');
+    if (prior && prior.requests >= 10 && route.requests >= 10 && route.errors >= 5 &&
+        route.errors / route.requests - prior.errors / prior.requests >= 0.20) {
+      signals.push('Aumento da proporção de erros');
+    }
+    if (signals.length) findings.push({...route, signals});
+  }
+  return findings.sort((a,b) => b.signals.length - a.signals.length || b.requests - a.requests || a.path.localeCompare(b.path));
+}
+
+const status = byId('status');
+const results = byId('results');
+const filter = byId('filter');
+const output = byId('export');
+let findings = [];
+let revision = 0;
+let asset = '';
+function visible() {
+  return findings.filter(item => !filter.value || item.signals.includes(filter.value));
+}
+function render() {
+  const selected = visible();
+  const displayed = selected.slice(0,1000);
+  byId('rows').replaceChildren(...displayed.map(item => {
+    const row = document.createElement('tr');
+    for (const value of [item.path, item.requests, item.errors, item.signals.join(' · ')]) {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      row.append(cell);
+    }
+    return row;
+  }));
+  output.disabled = displayed.length === 0;
+  byId('export-status').textContent = displayed.length + ' de ' + selected.length + ' rotas no filtro. O arquivo JSON tem limite de 1 MiB.';
+}
+function show(current, baseline, name) {
+  if (!current.valid) throw new Error('Nenhuma linha compatível no log atual.');
+  if (baseline && !baseline.valid) throw new Error('Nenhuma linha compatível no log de referência.');
+  asset = name || 'Servidor web';
+  findings = triage(current, baseline);
+  filter.value = '';
+  const ignored = current.skipped + (baseline?.skipped ?? 0);
+  status.textContent = current.valid + ' linhas válidas no log atual' +
+    (baseline ? ' e ' + baseline.valid + ' na referência' : '') +
+    '. ' + ignored + ' linhas ignoradas. ' + findings.length + ' rotas para revisão.';
+  results.hidden = false;
+  render();
+}
+async function readFile(file) {
+  if (file.size > 10 * 1024 * 1024) throw new Error('O arquivo ' + file.name + ' excede 10 MiB.');
+  return parseLog(await file.text());
+}
+for (const id of ['current','baseline','asset']) byId(id).addEventListener('input', () => {
+  revision++;
+  status.textContent = '';
+  results.hidden = true;
+});
+byId('analyze').addEventListener('click', async () => {
+  const run = ++revision;
+  results.hidden = true;
+  status.textContent = 'Lendo arquivos…';
+  try {
+    const current = byId('current').files[0];
+    const baseline = byId('baseline').files[0];
+    const name = byId('asset').value.trim();
+    if (!current) throw new Error('Selecione um log atual ou use o exemplo.');
+    const recent = await readFile(current);
+    if (run !== revision) return;
+    const prior = baseline ? await readFile(baseline) : null;
+    if (run === revision) show(recent, prior, name);
+  } catch (error) {
+    if (run === revision) status.textContent = error.message;
+  }
+});
+byId('demo').addEventListener('click', () => {
+  revision++;
+  const line = (client,path,code) => client + ' - - [21/Nov/2026:09:30:00 -0300] "GET ' + path + ' HTTP/1.1" ' + code + ' 42';
+  const normal = [line('192.0.2.1','/inicio',200),line('192.0.2.2','/inicio',200)];
+  show(parseLog([...normal,line('192.0.2.1','/relatorio-novo?origem=interno',200)].join('\n')),parseLog(normal.join('\n')),'Portal de demonstração');
+});
+filter.addEventListener('change', render);
+output.addEventListener('click', () => {
+  const encoder = new TextEncoder();
+  const records = [];
+  let bytes = 2;
+  for (const item of visible().slice(0,1000)) {
+    const record = JSON.stringify({
+      data: new Date(item.latest).toISOString(),
+      ativo: asset,
+      origem: 'Triagem de logs web',
+      mensagem: item.path + ' | ' + item.signals.join('; ') + ' | ' + item.requests + ' solicitações, ' + item.errors + ' erros'
+    });
+    bytes += encoder.encode(record).length + (records.length ? 1 : 0);
+    if (bytes > 1024 * 1024) break;
+    records.push(record);
+  }
+  if (!records.length) {
+    byId('export-status').textContent = 'O primeiro evento ultrapassa o limite do arquivo.';
+    return;
+  }
+  const url = URL.createObjectURL(new Blob(['[' + records.join(',') + ']'],{type:'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'aurion-eventos-web.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  byId('export-status').textContent = records.length + ' eventos exportados. Importe o arquivo na linha do tempo do Aurion Evidências.';
+});
+</script>
+</html>

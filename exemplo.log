@@ -1,0 +1,3 @@
+type=AVC msg=audit(1760000000.100:11): avc: denied { read } for comm="demo" scontext=system_u:system_r:app_t:s0 tcontext=system_u:object_r:cache_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1760000002.100:12): avc: denied { read } for comm="demo" scontext=system_u:system_r:app_t:s0 tcontext=system_u:object_r:cache_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1760000003.100:13): avc: denied { write } for comm="demo" scontext=system_u:system_r:app_t:s0 tcontext=system_u:object_r:cache_t:s0 tclass=file permissive=1

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Aurion Enigma</title>
+<style>
+*{box-sizing:border-box}body{margin:0;color:#f1e9db;background:#151818;font:16px/1.5 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:clamp(18px,5vw,64px)}header{margin-bottom:28px}header strong,legend{color:#ffd18e}h1{font:clamp(42px,8vw,78px)/1 Georgia,serif;margin:12px 0}p{color:#d1c8ba}nav{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.panel,fieldset{min-width:0;margin:0;padding:18px;border:1px solid #60584c;border-radius:8px;background:#202424}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px;margin:14px 0}.inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.inputs label{font-size:.85rem}input,textarea,select,button{font:inherit;color:inherit;border:1px solid #706556;border-radius:5px;background:#161919;padding:8px}input,select,textarea{display:block;width:100%}textarea{min-height:120px;resize:vertical;margin-top:7px;font-family:monospace}button{cursor:pointer}button.primary{background:#ffd18e;color:#21180c;font-weight:700}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid #ffd18e;outline-offset:2px}.trace{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));list-style:none;padding:0;gap:8px}.trace li{border:1px solid #60584c;border-radius:6px;padding:8px;color:#d1c8ba}.trace b{display:block;color:#ffd18e;font:26px monospace}.step{max-width:150px}.error{color:#ffb1a2}h2{margin:8px 0}.notes{font-size:.92rem}code{color:#ffd18e}
+</style>
+<main>
+<header><strong>AURION CYBER</strong><h1>Enigma</h1><p>Simulador histórico de três rotores. Acompanhe o movimento mecânico e veja o percurso elétrico de cada letra.</p></header>
+<form id="machine">
+<div id="rotors" class="grid"></div>
+<div class="grid">
+<label>Refletor<select id="reflector"><option value="B">B</option><option value="C">C</option></select></label>
+<label>Painel de conexões<input id="plugboard" maxlength="60" placeholder="Ex.: AV BS CG" spellcheck="false"></label>
+</div>
+<div class="grid">
+<label>Mensagem<textarea id="message" maxlength="10000" spellcheck="false" placeholder="Digite ou cole uma mensagem"></textarea></label>
+<label>Resultado<textarea id="output" readonly spellcheck="false"></textarea></label>
+</div>
+<nav aria-label="Ações">
+<button class="primary" type="submit">Processar mensagem</button>
+<button type="button" id="example">Exemplo clássico</button>
+<button type="button" id="double">Exemplo de passo duplo</button>
+<button type="button" id="reverse" disabled>Decifrar resultado</button>
+</nav>
+<p id="status" role="status"></p>
+</form>
+<section class="panel" id="trace-panel" hidden>
+<h2>Percurso do sinal</h2>
+<label class="step">Letra nº<input id="step" type="number" min="1" step="1" value="1"></label>
+<p id="windows"></p>
+<ol id="trace" class="trace"></ol>
+</section>
+<p class="notes">Os acentos são normalizados e apenas letras de A a Z avançam os rotores. Cada execução parte das posições configuradas. Uso educacional. Para proteger dados atuais, use criptografia moderna.</p>
+</main>
+<script>
+const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const wheels = {
+  I: ['EKMFLGDQVZNTOWYHXUSPAIBRCJ', 'Q'],
+  II: ['AJDKSIRUXBLHWTMCQGZNPYFVOE', 'E'],
+  III: ['BDFHJLCPRTXVZNYEIWGAKMUSQO', 'V'],
+  IV: ['ESOVPZJAYQUIRHXLNFTGKDCMWB', 'J'],
+  V: ['VZBRGITYUPSDNHLXAWMJQOFECK', 'Z']
+};
+const reflectors = { B: 'YRUHQSLDPXNGOKMIEBFZCWVJAT', C: 'FVPJIAOYEDRZXWGCTKUQSBNMHL' };
+const mod = value => (value + 26) % 26;
+
+function plugMap(text) {
+  const pairs = text.trim().toUpperCase().split(/\s+/).filter(Boolean);
+  if (pairs.length > 10) throw new Error('Use até dez pares de conexões.');
+  const map = [...alphabet];
+  const used = new Set();
+  for (const pair of pairs) {
+    if (!/^[A-Z]{2}$/.test(pair) || pair[0] === pair[1] || [...pair].some(letter => used.has(letter))) {
+      throw new Error('Informe pares separados por espaços, sem repetir letras. Exemplo: AV BS CG.');
+    }
+    const [a,b] = pair;
+    map[alphabet.indexOf(a)] = b;
+    map[alphabet.indexOf(b)] = a;
+    used.add(a);
+    used.add(b);
+  }
+  return map;
+}
+
+function runEnigma(message, {rotors, windows, rings, reflector, pairs}) {
+  if (new Set(rotors).size !== 3) throw new Error('Escolha três rotores diferentes.');
+  const plug = plugMap(pairs);
+  const positions = windows.map(letter => alphabet.indexOf(letter));
+  const labels = ['Esquerdo', 'Central', 'Direito'];
+  const stages = [];
+  const letters = message.normalize('NFD').replace(/\p{M}/gu, '').toUpperCase().replace(/[^A-Z]/g, '');
+  for (const input of letters) {
+    const before = positions.map(position => alphabet[position]).join('');
+    const middleAtNotch = before[1] === wheels[rotors[1]][1];
+    const rightAtNotch = before[2] === wheels[rotors[2]][1];
+    if (middleAtNotch) positions[0] = mod(positions[0] + 1);
+    if (middleAtNotch || rightAtNotch) positions[1] = mod(positions[1] + 1);
+    positions[2] = mod(positions[2] + 1);
+    const after = positions.map(position => alphabet[position]).join('');
+    let signal = alphabet.indexOf(input);
+    const trace = [['Entrada', input]];
+    function record(label, value) {
+      signal = value;
+      trace.push([label, alphabet[value]]);
+    }
+    function passRotor(slot, reverse) {
+      const offset = positions[slot] - rings[slot];
+      const contact = mod(signal + offset);
+      const wiring = wheels[rotors[slot]][0];
+      const output = reverse ? wiring.indexOf(alphabet[contact]) : alphabet.indexOf(wiring[contact]);
+      record(labels[slot] + (reverse ? ' · volta' : ' · ida'), mod(output - offset));
+    }
+    record('Painel · ida', alphabet.indexOf(plug[signal]));
+    for (let slot = 2; slot >= 0; slot--) passRotor(slot, false);
+    record('Refletor ' + reflector, alphabet.indexOf(reflectors[reflector][signal]));
+    for (let slot = 0; slot < 3; slot++) passRotor(slot, true);
+    record('Painel · saída', alphabet.indexOf(plug[signal]));
+    stages.push({ before, after, trace, output: alphabet[signal] });
+  }
+  return { output: stages.map(stage => stage.output).join(''), stages };
+}
+
+const byId = id => document.getElementById(id);
+const form = byId('machine');
+const slots = ['Esquerda', 'Centro', 'Direita'].map((name, index) => {
+  const fieldset = document.createElement('fieldset');
+  fieldset.innerHTML = '<legend>' + name + '</legend><div class="inputs"><label>Rotor<select data-rotor></select></label><label>Janela<select data-window></select></label><label>Anel<select data-ring></select></label></div>';
+  const [rotor, window, ring] = fieldset.querySelectorAll('select');
+  for (const key of Object.keys(wheels)) rotor.add(new Option(key));
+  for (const [position, letter] of [...alphabet].entries()) {
+    window.add(new Option(letter));
+    ring.add(new Option(String(position + 1).padStart(2, '0'), position));
+  }
+  rotor.selectedIndex = index;
+  byId('rotors').append(fieldset);
+  return { rotor, window, ring };
+});
+let stages = [];
+function drawStep() {
+  const input = byId('step');
+  const stage = stages[Number(input.value) - 1];
+  byId('windows').textContent = stage ? 'Janelas: ' + stage.before + ' → ' + stage.after : 'Escolha uma posição de 1 a ' + stages.length + '.';
+  byId('trace').replaceChildren(...(stage?.trace ?? []).map(([label, letter]) => {
+    const item = document.createElement('li');
+    const value = document.createElement('b');
+    value.textContent = letter;
+    item.append(label, value);
+    return item;
+  }));
+}
+function clear() {
+  byId('output').value = '';
+  byId('status').textContent = '';
+  byId('status').classList.remove('error');
+  byId('trace-panel').hidden = true;
+  byId('reverse').disabled = true;
+}
+function process() {
+  clear();
+  try {
+    const result = runEnigma(byId('message').value, {
+      rotors: slots.map(slot => slot.rotor.value),
+      windows: slots.map(slot => slot.window.value),
+      rings: slots.map(slot => Number(slot.ring.value)),
+      reflector: byId('reflector').value,
+      pairs: byId('plugboard').value
+    });
+    stages = result.stages;
+    byId('output').value = result.output;
+    byId('status').textContent = stages.length ? stages.length + (stages.length === 1 ? ' letra processada.' : ' letras processadas.') : 'Digite uma mensagem com pelo menos uma letra.';
+    if (!stages.length) return;
+    byId('reverse').disabled = false;
+    byId('trace-panel').hidden = false;
+    byId('step').max = stages.length;
+    byId('step').value = 1;
+    drawStep();
+  } catch (error) {
+    byId('status').classList.add('error');
+    byId('status').textContent = error.message;
+  }
+}
+function example(windows, message) {
+  slots.forEach((slot, index) => {
+    slot.rotor.selectedIndex = index;
+    slot.window.value = windows[index];
+    slot.ring.value = '0';
+  });
+  byId('reflector').value = 'B';
+  byId('plugboard').value = '';
+  byId('message').value = message;
+  process();
+}
+form.addEventListener('submit', event => { event.preventDefault(); process(); });
+form.addEventListener('input', clear);
+byId('step').addEventListener('input', drawStep);
+byId('example').addEventListener('click', () => example('AAA', 'AAAAA'));
+byId('double').addEventListener('click', () => example('ADV', 'AAA'));
+byId('reverse').addEventListener('click', () => {
+  byId('message').value = byId('output').value;
+  process();
+});
+</script>
+</html>

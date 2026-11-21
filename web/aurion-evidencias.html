@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Aurion Cyber | Central de investigação</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0b1017;color:#eff5ff;font:16px system-ui}main{max-width:1050px;margin:auto;padding:clamp(20px,6vw,72px)}header strong{color:#83f9d1}h1{font-size:clamp(32px,6vw,56px);letter-spacing:-.05em;margin:18px 0 10px}p{color:#b8c7da;line-height:1.55}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px;margin:24px 0 16px}label{font-weight:650}textarea,pre{display:block;width:100%;padding:16px;background:#111b28;color:#eff5ff;border:1px solid #43556c;border-radius:12px;font:14px/1.5 monospace}textarea{min-height:220px;margin-top:8px;resize:vertical}pre{white-space:pre-wrap;overflow-wrap:anywhere}button{border:1px solid #43556c;border-radius:9px;padding:10px 15px;color:inherit;background:#182637;font:inherit;cursor:pointer;margin:0 4px 8px 0}button[type=submit]{background:#83f9d1;color:#071810;font-weight:700}button:disabled{opacity:.45;cursor:default}#status{min-height:24px}
+
+a{color:#83f9d1}section{margin:28px 0;padding:16px 0;border-block:1px solid #43556c}
+input,select{display:block;width:100%;margin:8px 0 16px;padding:10px;border:1px solid #43556c;border-radius:8px;background:#111b28;color:inherit;font:inherit}
+#event-input{min-height:140px;margin-bottom:12px}li{padding:8px 0;overflow-wrap:anywhere}li small{display:block;color:#b8c7da;margin-top:4px}
+</style>
+<main>
+<header><strong>AURION CYBER</strong><h1>Central de investigação</h1><p>Reúna eventos já coletados e compare os inventários antes e depois da correção. Os dados são processados no navegador.</p></header>
+<nav><a href="#timeline">Linha do tempo</a> · <a href="#inventory">Comparar inventários</a> · <a href="#integrity">Verificar arquivos</a></nav>
+<section id="timeline">
+<h2>Linha do tempo</h2>
+<label>Nome do caso<input id="case-name" maxlength="120" placeholder="Ex.: Revisão de acessos"></label>
+<label>Arquivo de eventos<input id="event-file" type="file" accept=".json,application/json"></label>
+<details><summary>Formato dos eventos</summary><pre>[{"data":"2026-11-21T09:30:00-03:00","ativo":"Portal","origem":"Auditoria","mensagem":"Revisão iniciada"}]</pre></details>
+<label>JSON de eventos<textarea id="event-input" spellcheck="false"></textarea></label>
+<button type="button" id="event-load">Montar linha do tempo</button>
+<button type="button" id="event-demo">Carregar caso de exemplo</button>
+<div class="grid">
+<label>Ativo<select id="asset-filter"><option value="">Todos</option></select></label>
+<label>Origem<select id="source-filter"><option value="">Todas</option></select></label>
+</div>
+<p id="event-status" role="status"></p>
+<ol id="event-list"></ol>
+<button type="button" id="case-export" disabled>Exportar dossiê</button>
+</section>
+<h2 id="inventory">Comparação de inventários</h2>
+<form>
+<p>Cada JSON deve conter uma lista de objetos com três campos de texto: <code>ativo</code>, <code>controle</code> e <code>estado</code>. Use um registro por combinação de ativo e controle.</p>
+<div class="grid">
+<label>Inventário anterior<textarea id="before" required spellcheck="false"></textarea></label>
+<label>Inventário atual<textarea id="after" required spellcheck="false"></textarea></label>
+</div>
+<button type="submit">Comparar</button>
+<button type="button" id="demo">Carregar exemplo</button>
+<button type="button" id="export" disabled>Baixar relatório</button>
+</form>
+<p id="status" role="status"></p>
+<pre id="report" hidden></pre>
+<section id="integrity">
+<h2>Integridade de evidências</h2>
+<p>Gere um manifesto SHA-256 antes de compartilhar os arquivos. Para conferir uma cópia, use o manifesto original obtido de uma fonte confiável.</p>
+<label>Arquivos de evidência<input type="file" id="evidence-files" multiple></label>
+<label>Manifesto original para conferência (opcional)<input type="file" id="reference-manifest" accept=".json,application/json"></label>
+<button type="button" id="check-evidence">Analisar arquivos</button>
+<button type="button" id="save-manifest" disabled>Baixar manifesto</button>
+<p id="integrity-status" role="status"></p>
+<pre id="integrity-report" hidden></pre>
+</section>
+</main>
+<script>
+const before = document.querySelector('#before');
+const after = document.querySelector('#after');
+const status = document.querySelector('#status');
+const report = document.querySelector('#report');
+const download = document.querySelector('#export');
+
+function indexRecords(input, name) {
+  let records;
+  try {
+    records = JSON.parse(input);
+  } catch {
+    throw new Error(name + ' contém JSON inválido.');
+  }
+  if (!Array.isArray(records)) throw new Error(name + ' deve conter uma lista.');
+  const index = new Map();
+  for (const [position, record] of records.entries()) {
+    const fields = ['ativo', 'controle', 'estado'];
+    if (!record || !fields.every(field => typeof record[field] === 'string' && record[field].trim())) {
+      throw new Error(name + ', registro ' + (position + 1) + ': preencha ativo, controle e estado.');
+    }
+    const [asset, control, state] = fields.map(field => record[field].trim());
+    const key = JSON.stringify([asset, control]);
+    if (index.has(key)) throw new Error(name + ' contém ativo e controle duplicados: ' + asset + ' / ' + control);
+    index.set(key, state);
+  }
+  return index;
+}
+
+function compare(previous, current) {
+  const groups = { Adicionados: [], Alterados: [], Removidos: [] };
+  for (const key of [...new Set([...previous.keys(), ...current.keys()])].sort()) {
+    const [asset, control] = JSON.parse(key);
+    const label = asset + ' / ' + control;
+    const oldValue = previous.get(key);
+    const newValue = current.get(key);
+    if (oldValue === undefined) groups.Adicionados.push(label + ': ' + newValue);
+    else if (newValue === undefined) groups.Removidos.push(label + ': ' + oldValue);
+    else if (oldValue !== newValue) groups.Alterados.push(label + ': ' + oldValue + ' → ' + newValue);
+  }
+  return groups;
+}
+
+function resetResult() {
+  report.hidden = true;
+  report.textContent = '';
+  download.disabled = true;
+  status.textContent = '';
+}
+document.querySelector('form').addEventListener('submit', event => {
+  event.preventDefault();
+  resetResult();
+  try {
+    const groups = compare(indexRecords(before.value, 'Inventário anterior'), indexRecords(after.value, 'Inventário atual'));
+    const total = Object.values(groups).reduce((sum, entries) => sum + entries.length, 0);
+    report.textContent = ['Aurion Cyber | Comparação de inventários', '', ...Object.entries(groups).flatMap(([name, entries]) => [
+      name + ' (' + entries.length + ')', ...entries.map(entry => '• ' + entry), ''
+    ])].join('\n');
+    report.hidden = false;
+    download.disabled = false;
+    status.textContent = total === 1 ? '1 diferença encontrada.' : total + ' diferenças encontradas.';
+  } catch (error) {
+    status.textContent = error.message;
+  }
+});
+for (const input of [before, after]) input.addEventListener('input', resetResult);
+document.querySelector('#demo').addEventListener('click', () => {
+  const record = (controle, estado) => ({ ativo: 'Portal de demonstração', controle, estado });
+  before.value = JSON.stringify([record('Revisão de permissões', 'Pendente'), record('Conta de treinamento', 'Cadastrada')], null, 2);
+  after.value = JSON.stringify([record('Revisão de permissões', 'Concluída'), record('Inventário de responsáveis', 'Atualizado')], null, 2);
+  resetResult();
+});
+function downloadText(filename, content, type = 'text/plain;charset=utf-8') {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+download.addEventListener('click', () => downloadText('aurion-comparacao.txt', report.textContent));
+
+const eventInput = document.querySelector('#event-input');
+const eventStatus = document.querySelector('#event-status');
+const eventList = document.querySelector('#event-list');
+const assetFilter = document.querySelector('#asset-filter');
+const sourceFilter = document.querySelector('#source-filter');
+const caseExport = document.querySelector('#case-export');
+const eventFile = document.querySelector('#event-file');
+const caseName = document.querySelector('#case-name');
+const maxBytes = 1024 * 1024;
+let events = [];
+let fileRead = 0;
+
+function parseEvents(input) {
+  if (new TextEncoder().encode(input).length > maxBytes) throw new Error('Limite de 1 MB por importação.');
+  let rows;
+  try {
+    rows = JSON.parse(input.replace(/^\uFEFF/, ''));
+  } catch {
+    throw new Error('JSON de eventos inválido.');
+  }
+  if (!Array.isArray(rows)) throw new Error('Informe uma lista de eventos.');
+  if (rows.length > 1000) throw new Error('Limite de 1.000 eventos por importação.');
+  return rows.map((row, index) => {
+    const fields = ['data', 'ativo', 'origem', 'mensagem'];
+    if (!row || !fields.every(field => typeof row[field] === 'string' && row[field].trim())) {
+      throw new Error('Evento ' + (index + 1) + ': preencha data, ativo, origem e mensagem.');
+    }
+    const [date, asset, source, message] = fields.map(field => row[field].trim());
+    const time = Date.parse(date);
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(date) || !Number.isFinite(time)) {
+      throw new Error('Evento ' + (index + 1) + ': use data ISO 8601 com fuso horário.');
+    }
+    return {date, time, asset, source, message};
+  }).sort((a, b) => a.time - b.time);
+}
+
+function visibleEvents() {
+  return events.filter(event =>
+    (!assetFilter.value || event.asset === assetFilter.value) &&
+    (!sourceFilter.value || event.source === sourceFilter.value)
+  );
+}
+
+function renderEvents() {
+  const visible = visibleEvents();
+  const rows = visible.map(event => {
+    const row = document.createElement('li');
+    const detail = document.createElement('small');
+    row.textContent = event.message;
+    detail.textContent = event.date + ' · ' + event.asset + ' · ' + event.source;
+    row.append(detail);
+    return row;
+  });
+  eventList.replaceChildren(...rows);
+  eventStatus.textContent = visible.length + ' de ' + events.length + ' eventos exibidos.';
+  caseExport.disabled = visible.length === 0;
+}
+
+function setEvents(next) {
+  events = next;
+  for (const [select, label, field] of [[assetFilter, 'Todos', 'asset'], [sourceFilter, 'Todas', 'source']]) {
+    const options = [...new Set(events.map(event => event[field]))].sort();
+    select.replaceChildren(new Option(label, ''), ...options.map(value => new Option(value, value)));
+  }
+  renderEvents();
+}
+
+function loadEvents() {
+  try {
+    setEvents(parseEvents(eventInput.value));
+  } catch (error) {
+    setEvents([]);
+    eventStatus.textContent = error.message;
+  }
+}
+
+function clearTimeline() {
+  setEvents([]);
+  eventStatus.textContent = '';
+}
+
+for (const select of [assetFilter, sourceFilter]) select.addEventListener('change', renderEvents);
+eventInput.addEventListener('input', () => {
+  fileRead++;
+  clearTimeline();
+});
+document.querySelector('#event-load').addEventListener('click', () => {
+  fileRead++;
+  loadEvents();
+});
+eventFile.addEventListener('change', async () => {
+  const [file] = eventFile.files;
+  eventFile.value = '';
+  if (!file) return;
+  const request = ++fileRead;
+  clearTimeline();
+  eventInput.value = '';
+  try {
+    if (file.size > maxBytes) throw new Error('Limite de 1 MB por importação.');
+    const content = await file.text();
+    if (request !== fileRead) return;
+    eventInput.value = content;
+    loadEvents();
+  } catch (error) {
+    if (request === fileRead) eventStatus.textContent = error.message;
+  }
+});
+document.querySelector('#event-demo').addEventListener('click', () => {
+  fileRead++;
+  caseName.value = 'Revisão de acessos';
+  const sample = [
+    ['09:42', 'Portal', 'Auditoria', 'Revisão de permissões concluída.'],
+    ['09:30', 'Portal', 'Auditoria', 'Revisão de permissões iniciada.'],
+    ['09:56', 'Painel', 'Registro administrativo', 'Inventário de responsáveis atualizado.']
+  ];
+  eventInput.value = JSON.stringify(sample.map(([time, ativo, origem, mensagem]) => ({
+    data: '2026-11-21T' + time + ':00-03:00', ativo, origem, mensagem
+  })), null, 2);
+  loadEvents();
+});
+caseExport.addEventListener('click', () => {
+  const visible = visibleEvents();
+  const lines = [
+    'Aurion Cyber | ' + (caseName.value.trim() || 'Caso sem título'),
+    'Eventos exportados: ' + visible.length + ' de ' + events.length,
+    '',
+    ...visible.map(event => event.date + ' | ' + event.asset + ' | ' + event.source + ' | ' + event.message)
+  ];
+  if (!report.hidden) lines.push('', report.textContent);
+  downloadText('aurion-dossie.txt', lines.join('\n'));
+});
+
+const evidenceFiles = document.querySelector('#evidence-files');
+const referenceFile = document.querySelector('#reference-manifest');
+const checkEvidence = document.querySelector('#check-evidence');
+const saveManifest = document.querySelector('#save-manifest');
+const integrityReport = document.querySelector('#integrity-report');
+const integrityStatus = document.querySelector('#integrity-status');
+let manifest = null;
+let integrityRun = 0;
+
+function readManifest(input) {
+  let parsed;
+  try {
+    parsed = JSON.parse(input.replace(/^\uFEFF/, ''));
+  } catch {
+    throw new Error('O manifesto contém JSON inválido.');
+  }
+  if (parsed?.version !== 1 || parsed.algorithm !== 'SHA-256' || !Array.isArray(parsed.files) || parsed.files.length > 100) {
+    throw new Error('Formato de manifesto incompatível.');
+  }
+  const names = new Set();
+  for (const file of parsed.files) {
+    if (!file || typeof file.name !== 'string' || !file.name || !Number.isSafeInteger(file.size) || file.size < 0 ||
+        typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256) || names.has(file.name)) {
+      throw new Error('O manifesto contém um arquivo inválido ou um nome repetido.');
+    }
+    names.add(file.name);
+  }
+  return parsed.files;
+}
+
+function compareManifests(reference, actual) {
+  const expected = new Map(reference.map(file => [file.name, file]));
+  const observed = new Map(actual.map(file => [file.name, file]));
+  const names = [...new Set([...expected.keys(), ...observed.keys()])].sort();
+  return names.map(name => {
+    const original = expected.get(name);
+    const copy = observed.get(name);
+    if (!original) return { name, result: 'Fora do manifesto' };
+    if (!copy) return { name, result: 'Ausente' };
+    const matches = original.size === copy.size && original.sha256 === copy.sha256;
+    return { name, result: matches ? 'Íntegro' : 'Divergente' };
+  });
+}
+
+async function fingerprint(file) {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  const sha256 = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  return { name: file.name, size: file.size, sha256 };
+}
+
+function resetIntegrity() {
+  integrityRun++;
+  manifest = null;
+  saveManifest.disabled = true;
+  integrityReport.hidden = true;
+  integrityReport.textContent = '';
+  integrityStatus.textContent = '';
+}
+
+for (const input of [evidenceFiles, referenceFile]) input.addEventListener('change', resetIntegrity);
+checkEvidence.addEventListener('click', async () => {
+  resetIntegrity();
+  const run = integrityRun;
+  const files = [...evidenceFiles.files];
+  const [reference] = referenceFile.files;
+  checkEvidence.disabled = true;
+  try {
+    if (!globalThis.crypto?.subtle) throw new Error('Abra em um navegador com suporte a SHA-256 local.');
+    if (!files.length) throw new Error('Selecione pelo menos um arquivo de evidência.');
+    if (files.length > 100 || files.some(file => file.size > 32 * 1024 * 1024)) {
+      throw new Error('Selecione até 100 arquivos de no máximo 32 MiB cada.');
+    }
+    if (new Set(files.map(file => file.name)).size !== files.length) {
+      throw new Error('Selecione arquivos com nomes distintos.');
+    }
+    if (reference?.size > 1024 * 1024) throw new Error('O manifesto original deve ter até 1 MiB.');
+    const expected = reference ? readManifest(await reference.text()) : null;
+    const actual = [];
+    for (const file of files) {
+      if (run !== integrityRun) return;
+      integrityStatus.textContent = 'Analisando arquivo ' + (actual.length + 1) + ' de ' + files.length + '…';
+      actual.push(await fingerprint(file));
+    }
+    if (run !== integrityRun) return;
+    if (expected) {
+      const results = compareManifests(expected, actual);
+      const matches = results.filter(entry => entry.result === 'Íntegro').length;
+      integrityStatus.textContent = matches + ' de ' + results.length + ' arquivos conferem com o manifesto original.';
+      integrityReport.textContent = results.map(entry => entry.result + ' | ' + JSON.stringify(entry.name)).join('\n');
+    } else {
+      manifest = { version: 1, algorithm: 'SHA-256', files: actual };
+      saveManifest.disabled = false;
+      integrityStatus.textContent = 'Manifesto pronto para ' + files.length + ' arquivo(s).';
+      integrityReport.textContent = actual.map(file => file.sha256 + ' | ' + JSON.stringify(file.name)).join('\n');
+    }
+    integrityReport.hidden = false;
+  } catch (error) {
+    if (run === integrityRun) integrityStatus.textContent = error.message;
+  } finally {
+    checkEvidence.disabled = false;
+  }
+});
+saveManifest.addEventListener('click', () => {
+  if (manifest) downloadText('aurion-manifesto-sha256.json', JSON.stringify(manifest, null, 2), 'application/json');
+});
+</script>
+</html>
