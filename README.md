@@ -67,3 +67,13 @@ No painel web, importe duas coletas JSON do mesmo ambiente. O comparador identif
 ## Mesa de fontes
 
 Registre o link público, as datas de origem e publicação, o achado e sua verificação. Salve o dossiê JSON para retomar o trabalho. A importação mescla por URL e atualiza registros coincidentes. Exporte os resultados filtrados para a linha do tempo. A página não recupera documentos automaticamente.
+
+## Revisão de runtimes Java
+
+Use `python3 java_review.py inventario.json catalogo.json --format aurion > eventos-java.json` para revisar metadados já coletados e encaminhar os resultados para a Central de Evidências.
+
+Os dois arquivos devem conter listas JSON. Cada registro requer `vendor`, `runtime`, `arch` e `build`. No inventário, inclua `asset`. No catálogo, inclua `reference` com o boletim ou registro de aprovação consultado pela equipe.
+
+A revisão compara o build completo com o catálogo fornecido. Se houver correspondência, o relatório registra a referência. Sem correspondência, pede revisão. O resultado representa a cobertura do catálogo e não determina se um runtime é vulnerável.
+
+Referência para triagem do Java4Shell: [CISA — CVE-2026-114938](https://content.govdelivery.com/accounts/USDHSCISA/bulletins/4332a87).
